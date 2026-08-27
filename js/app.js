@@ -147,6 +147,58 @@ function buildIngredientsHtml(ingredients) {
     .join("");
 }
 
+// ---------------- Instruction parsing (component groups) ----------------
+// Some recipe sites write instructions per component, with the label inline at the
+// start of the paragraph, e.g. "להכנת העוף/סלמון: בסיר עם מים רותחים, כף מלח..." -
+// this detects that leading "label:" prefix (or an explicit "## label" line) and
+// groups the steps under it, same idea as the ingredient sections above.
+function looksLikeInstructionHeadingPrefix(prefix) {
+  const p = prefix.trim();
+  if (!p || p.length > 30) return false;
+  if (/\d/.test(p)) return false;
+  return true;
+}
+
+function parseInstructionLines(lines) {
+  const groups = [];
+  let current = { heading: null, items: [] };
+  (lines || []).forEach((raw) => {
+    const line = String(raw).trim();
+    if (!line) return;
+    const explicitHeading = line.match(/^##\s*(.+)$/);
+    if (explicitHeading) {
+      if (current.items.length || current.heading) groups.push(current);
+      current = { heading: explicitHeading[1].trim(), items: [] };
+      return;
+    }
+    // Only match a "label:" prefix at the very START of the line - a colon appearing
+    // later mid-sentence (e.g. "...נתבל ב: סויה, דבש...") is left untouched.
+    const inlineMatch = line.match(/^([^:：]{1,30}?)[:：]\s*(.+)$/);
+    if (inlineMatch && looksLikeInstructionHeadingPrefix(inlineMatch[1])) {
+      if (current.items.length || current.heading) groups.push(current);
+      current = { heading: inlineMatch[1].trim(), items: [inlineMatch[2].trim()] };
+      return;
+    }
+    current.items.push(line);
+  });
+  if (current.items.length || current.heading) groups.push(current);
+  return groups;
+}
+
+function buildInstructionsHtml(instructions) {
+  const groups = parseInstructionLines(instructions);
+  if (!groups.length) return '<p class="hint-text">לא הוזנו הוראות</p>';
+  return groups
+    .map((g) => {
+      const heading = g.heading
+        ? `<div class="ingredient-group-title">${escapeHtml(g.heading)}</div>`
+        : "";
+      const items = g.items.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+      return `${heading}<ol class="instructions-list">${items}</ol>`;
+    })
+    .join("");
+}
+
 // ---------------- Init ----------------
 document.addEventListener("DOMContentLoaded", init);
 
@@ -390,9 +442,7 @@ function renderRecipeDetailScreen() {
       <button class="btn secondary" onclick="goHome()">חזרה</button></div>`;
   }
   const ingredientsHtml = buildIngredientsHtml(recipe.ingredients);
-  const instructionsHtml = (recipe.instructions || [])
-    .map((s) => `<li>${escapeHtml(s)}</li>`)
-    .join("");
+  const instructionsHtml = buildInstructionsHtml(recipe.instructions);
   const photo = recipe.imageDataUrl
     ? `<img class="detail-photo" src="${recipe.imageDataUrl}" alt="תמונת המתכון" />`
     : "";
@@ -421,7 +471,7 @@ function renderRecipeDetailScreen() {
         </div>
         <div class="section">
           <h3>אופן ההכנה</h3>
-          <ol class="instructions-list">${instructionsHtml || "<li>לא הוזנו הוראות</li>"}</ol>
+          ${instructionsHtml}
         </div>
         ${notes}
         ${source}
