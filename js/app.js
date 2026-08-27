@@ -81,6 +81,61 @@ function categoryName(id) {
   return c ? c.name : "ללא קטגוריה";
 }
 
+// ---------------- Ingredient parsing (sections + optional marking) ----------------
+// Convention used in the ingredients textarea:
+//   - a line starting with "##" starts a new section, e.g. "## לבצק"
+//   - a line ending with "(רשות)" (or containing "אופציונלי"/"optional") is marked optional
+// This is stored as-is in the plain ingredients array (fully backward compatible with
+// existing recipes / web imports that never use this convention - they just render as
+// one flat, unlabeled list, same as before).
+function parseIngredientLines(lines) {
+  const groups = [];
+  let current = { heading: null, items: [] };
+  (lines || []).forEach((raw) => {
+    const line = String(raw).trim();
+    if (!line) return;
+    const headingMatch = line.match(/^##\s*(.+)$/);
+    if (headingMatch) {
+      if (current.items.length || current.heading) groups.push(current);
+      current = { heading: headingMatch[1].trim(), items: [] };
+      return;
+    }
+    const isOptional =
+      /\(\s*רשות\s*\)\s*$/.test(line) ||
+      /\(\s*optional\s*\)\s*$/i.test(line) ||
+      /אופציונלי/.test(line);
+    const text = line
+      .replace(/\(\s*רשות\s*\)\s*$/, "")
+      .replace(/\(\s*optional\s*\)\s*$/i, "")
+      .replace(/\s*[-–]?\s*אופציונלי\s*$/, "")
+      .trim();
+    current.items.push({ text, optional: isOptional });
+  });
+  if (current.items.length || current.heading) groups.push(current);
+  return groups;
+}
+
+function buildIngredientsHtml(ingredients) {
+  const groups = parseIngredientLines(ingredients);
+  if (!groups.length) return '<p class="hint-text">לא הוזנו מרכיבים</p>';
+  return groups
+    .map((g) => {
+      const heading = g.heading
+        ? `<div class="ingredient-group-title">${escapeHtml(g.heading)}</div>`
+        : "";
+      const items = g.items
+        .map(
+          (it) =>
+            `<li class="${it.optional ? "optional" : ""}">${escapeHtml(it.text)}${
+              it.optional ? '<span class="optional-badge">רשות</span>' : ""
+            }</li>`
+        )
+        .join("");
+      return `${heading}<ul class="ingredients-list">${items}</ul>`;
+    })
+    .join("");
+}
+
 // ---------------- Init ----------------
 document.addEventListener("DOMContentLoaded", init);
 
@@ -323,9 +378,7 @@ function renderRecipeDetailScreen() {
     return `<div class="screen"><p>המתכון לא נמצא.</p>
       <button class="btn secondary" onclick="goHome()">חזרה</button></div>`;
   }
-  const ingredientsHtml = (recipe.ingredients || [])
-    .map((i) => `<li>${escapeHtml(i)}</li>`)
-    .join("");
+  const ingredientsHtml = buildIngredientsHtml(recipe.ingredients);
   const instructionsHtml = (recipe.instructions || [])
     .map((s) => `<li>${escapeHtml(s)}</li>`)
     .join("");
@@ -353,7 +406,7 @@ function renderRecipeDetailScreen() {
         <div class="badge">${escapeHtml(categoryName(recipe.categoryId))}</div>
         <div class="section">
           <h3>מרכיבים</h3>
-          <ul class="ingredients-list">${ingredientsHtml || "<li>לא הוזנו מרכיבים</li>"}</ul>
+          ${ingredientsHtml}
         </div>
         <div class="section">
           <h3>אופן ההכנה</h3>
@@ -503,10 +556,18 @@ async function runUrlImport() {
     render();
     showToast("המתכון יובא בהצלחה - כדאי לבדוק ולערוך לפני שמירה");
   } catch (err) {
-    console.warn(err);
+    console.warn("Recipe import failed:", err, err && err.details);
     state.urlImportState.loading = false;
-    state.urlImportState.error =
-      "לא הצלחנו לייבא את המתכון אוטומטית מהקישור הזה. אפשר לנסות קישור אחר או לעבור להזנה ידנית.";
+    if (err && err.code === "NO_STRUCTURED_DATA") {
+      state.urlImportState.error =
+        "האתר נטען בהצלחה, אבל לא נמצא בו מבנה מתכון סטנדרטי - כנראה שהאתר הזה פשוט לא נתמך לייבוא אוטומטי. אפשר לעבור להזנה ידנית ולשמור את הקישור למקור.";
+    } else if (err && err.code === "FETCH_FAILED") {
+      state.urlImportState.error =
+        "לא הצלחנו לגשת לעמוד (ייתכן שהאתר חוסם גישה אוטומטית, או ששירותי הייבוא עמוסים כרגע). אפשר לנסות שוב בעוד רגע, או לעבור להזנה ידנית.";
+    } else {
+      state.urlImportState.error =
+        "לא הצלחנו לייבא את המתכון אוטומטית מהקישור הזה. אפשר לנסות קישור אחר או לעבור להזנה ידנית.";
+    }
     render();
   }
 }
@@ -575,7 +636,8 @@ function renderRecipeFormScreen() {
         </label>
 
         <label class="field-label">מרכיבים (מרכיב אחד בכל שורה)</label>
-        <textarea id="f-ingredients" class="input textarea" rows="6" placeholder="2 כוסות קמח&#10;כפית סודה לשתייה&#10;...">${escapeHtml((d.ingredients || []).join("\n"))}</textarea>
+        <p class="hint-text">אפשר לחלק לחלקים עם ##‎ (למשל "## לבצק"), ולסמן מרכיב לא-חובה בסוף השורה עם (רשות)</p>
+        <textarea id="f-ingredients" class="input textarea" rows="8" placeholder="## לבצק&#10;2 כוסות קמח&#10;1 ביצה&#10;&#10;## למילוי&#10;3 תפוחים&#10;1 כפית קינמון (רשות)">${escapeHtml((d.ingredients || []).join("\n"))}</textarea>
 
         <label class="field-label">אופן ההכנה (שלב אחד בכל שורה)</label>
         <textarea id="f-instructions" class="input textarea" rows="8" placeholder="לחמם תנור ל-180 מעלות&#10;לערבב את החומרים היבשים&#10;...">${escapeHtml((d.instructions || []).join("\n"))}</textarea>
