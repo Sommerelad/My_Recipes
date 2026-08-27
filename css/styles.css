@@ -344,6 +344,26 @@ body {
   font-size: 17px;
 }
 .ingredients-list li, .instructions-list li { margin-bottom: 6px; }
+
+.ingredient-group-title {
+  font-weight: 700;
+  color: var(--accent-dark);
+  font-size: 15.5px;
+  margin: 16px 0 4px;
+}
+.ingredient-group-title:first-of-type { margin-top: 0; }
+.ingredients-list li.optional { color: var(--text-muted-2); }
+.optional-badge {
+  display: inline-block;
+  background: #f3e6cf;
+  color: var(--brown);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 1px 9px;
+  margin-inline-start: 8px;
+  vertical-align: middle;
+}
 .notes-text { line-height: 1.7; font-size: 15.5px; white-space: pre-wrap; }
 .source-line { font-size: 13.5px; color: var(--text-muted-2); word-break: break-all; }
 .meta-line { font-size: 12.5px; color: var(--text-muted-2); margin-top: 18px; }
