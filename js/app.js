@@ -85,9 +85,19 @@ function categoryName(id) {
 // Convention used in the ingredients textarea:
 //   - a line starting with "##" starts a new section, e.g. "## לבצק"
 //   - a line ending with "(רשות)" (or containing "אופציונלי"/"optional") is marked optional
-// This is stored as-is in the plain ingredients array (fully backward compatible with
-// existing recipes / web imports that never use this convention - they just render as
-// one flat, unlabeled list, same as before).
+// On top of that, lines are auto-detected as section headings even without "##" when they
+// look like the short "לרוטב:" / "לעוף/סלמון:" / "מה צריכים:" style labels many recipe sites
+// already use - this also means existing/previously-imported recipes benefit automatically,
+// without needing the "##" marker or a re-import.
+function looksLikeIngredientHeading(line) {
+  if (!/[:：]\s*$/.test(line)) return false; // ends with a colon
+  if (line.length > 40) return false; // section labels are short
+  if (/\d/.test(line)) return false; // quantities almost always include a digit
+  const measureWords = /(כוס|כפית|כפות|כף|גרם|ק"ג|קילו|מ"ל|ליטר|יחיד|חבילה|קורט|קמצוץ|חתיכ)/;
+  if (measureWords.test(line)) return false;
+  return true;
+}
+
 function parseIngredientLines(lines) {
   const groups = [];
   let current = { heading: null, items: [] };
@@ -95,9 +105,10 @@ function parseIngredientLines(lines) {
     const line = String(raw).trim();
     if (!line) return;
     const headingMatch = line.match(/^##\s*(.+)$/);
-    if (headingMatch) {
+    if (headingMatch || looksLikeIngredientHeading(line)) {
+      const headingText = headingMatch ? headingMatch[1].trim() : line.replace(/[:：]\s*$/, "").trim();
       if (current.items.length || current.heading) groups.push(current);
-      current = { heading: headingMatch[1].trim(), items: [] };
+      current = { heading: headingText, items: [] };
       return;
     }
     const isOptional =
@@ -636,7 +647,7 @@ function renderRecipeFormScreen() {
         </label>
 
         <label class="field-label">מרכיבים (מרכיב אחד בכל שורה)</label>
-        <p class="hint-text">אפשר לחלק לחלקים עם ##‎ (למשל "## לבצק"), ולסמן מרכיב לא-חובה בסוף השורה עם (רשות)</p>
+        <p class="hint-text">שורה קצרה שמסתיימת בנקודתיים (כמו "לרוטב:") תזוהה אוטומטית ככותרת חלק. אפשר גם לסמן זאת ידנית עם ##‎ (למשל "## לבצק"). לסימון מרכיב לא-חובה, להוסיף בסוף השורה (רשות)</p>
         <textarea id="f-ingredients" class="input textarea" rows="8" placeholder="## לבצק&#10;2 כוסות קמח&#10;1 ביצה&#10;&#10;## למילוי&#10;3 תפוחים&#10;1 כפית קינמון (רשות)">${escapeHtml((d.ingredients || []).join("\n"))}</textarea>
 
         <label class="field-label">אופן ההכנה (שלב אחד בכל שורה)</label>
