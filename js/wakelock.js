@@ -1,9 +1,11 @@
 // wakelock.js - keeps the tablet screen from sleeping while the app is open.
 // Requires a secure context (HTTPS or localhost). Falls back silently if unsupported.
+// Can be turned on/off (the app persists that choice and passes the initial value in).
 
 const WakeLockManager = (() => {
   let sentinel = null;
   let supported = "wakeLock" in navigator;
+  let enabled = true;
   let statusListeners = [];
 
   function notify(status) {
@@ -11,6 +13,10 @@ const WakeLockManager = (() => {
   }
 
   async function request() {
+    if (!enabled) {
+      notify("disabled");
+      return false;
+    }
     if (!supported) {
       notify("unsupported");
       return false;
@@ -19,7 +25,8 @@ const WakeLockManager = (() => {
       sentinel = await navigator.wakeLock.request("screen");
       notify("active");
       sentinel.addEventListener("release", () => {
-        notify("released");
+        // Only report "released" if we didn't just release it ourselves via setEnabled(false).
+        if (enabled) notify("released");
       });
       return true;
     } catch (err) {
@@ -37,20 +44,40 @@ const WakeLockManager = (() => {
     }
   }
 
+  function setEnabled(value) {
+    enabled = !!value;
+    if (enabled) {
+      request();
+    } else {
+      release();
+      notify("disabled");
+    }
+  }
+
   function onStatusChange(fn) {
     statusListeners.push(fn);
   }
 
-  function init() {
-    request();
+  function init(initialEnabled) {
+    enabled = initialEnabled !== false;
+    if (enabled) request();
+    else notify("disabled");
     // Re-acquire the lock whenever the tab/app becomes visible again
     // (the OS auto-releases it when the screen is hidden/backgrounded).
     document.addEventListener("visibilitychange", async () => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible" && enabled) {
         await request();
       }
     });
   }
 
-  return { init, request, release, onStatusChange, isSupported: () => supported };
+  return {
+    init,
+    request,
+    release,
+    setEnabled,
+    onStatusChange,
+    isSupported: () => supported,
+    isEnabled: () => enabled
+  };
 })();
