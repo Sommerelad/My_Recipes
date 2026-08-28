@@ -12,7 +12,9 @@ const state = {
   editingRecipe: null,
   formMode: "new", // new | edit
   setupCategoryDrafts: [],
-  urlImportState: { url: "", loading: false, error: "" }
+  urlImportState: { url: "", loading: false, error: "" },
+  keepScreenOnEnabled: true,
+  wakeLockStatus: "unknown"
 };
 
 // ---------------- Utilities ----------------
@@ -203,7 +205,14 @@ function buildInstructionsHtml(instructions) {
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
-  WakeLockManager.init();
+  const savedKeepScreenOn = await DB.getMeta("keepScreenOnEnabled");
+  state.keepScreenOnEnabled = savedKeepScreenOn === undefined ? true : !!savedKeepScreenOn;
+
+  WakeLockManager.onStatusChange((status) => {
+    state.wakeLockStatus = status;
+    if (state.screen === "settings") render();
+  });
+  WakeLockManager.init(state.keepScreenOnEnabled);
 
   if ("serviceWorker" in navigator) {
     try {
@@ -806,6 +815,16 @@ function renderSettingsScreen() {
         </div>
 
         <div class="section">
+          <h3>מסך פעיל</h3>
+          <label class="checkbox-row">
+            <input type="checkbox" id="keep-screen-on-toggle" ${state.keepScreenOnEnabled ? "checked" : ""}
+              onchange="toggleKeepScreenOn(this.checked)" />
+            למנוע מהמסך להיכבות בזמן שהאפליקציה פתוחה
+          </label>
+          <p class="hint-text">${wakeLockStatusText()}</p>
+        </div>
+
+        <div class="section">
           <h3>גיבוי ושחזור</h3>
           <p class="hint-text">כל המתכונים שמורים על הטאבלט בלבד. מומלץ לייצא גיבוי מדי פעם.</p>
           <button class="btn primary full" onclick="exportBackup()">⬇️ ייצוא גיבוי (JSON)</button>
@@ -824,6 +843,29 @@ function renderSettingsScreen() {
       </div>
       ${renderBottomNav("settings")}
     </div>`;
+}
+
+function wakeLockStatusText() {
+  if (!state.keepScreenOnEnabled) return "כבוי - המסך יוכל להיכבות כרגיל.";
+  switch (state.wakeLockStatus) {
+    case "active":
+      return "פעיל ✅ - המסך יישאר דלוק כל עוד האפליקציה פתוחה.";
+    case "unsupported":
+      return "הדפדפן הזה לא תומך בתכונה זו.";
+    case "failed":
+      return "לא הצלחנו להפעיל את נעילת המסך (ודאו שהאפליקציה נפתחת מכתובת https://).";
+    case "released":
+      return "המתנה... ננעל שוב אוטומטית כשהמסך יהיה פעיל.";
+    default:
+      return "בודק זמינות...";
+  }
+}
+
+async function toggleKeepScreenOn(checked) {
+  state.keepScreenOnEnabled = checked;
+  await DB.setMeta("keepScreenOnEnabled", checked);
+  WakeLockManager.setEnabled(checked);
+  render();
 }
 
 async function renameCategory(id, name) {
