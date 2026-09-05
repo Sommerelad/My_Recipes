@@ -319,6 +319,102 @@ body {
 .photo-actions { display: flex; gap: 10px; margin-bottom: 6px; }
 .photo-actions .btn { flex: 1; }
 
+/* ===== Process photos (form: add/remove grid) ===== */
+.process-photos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 10px;
+  margin: 4px 0 10px;
+}
+.process-photo-item {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f3e6cf;
+}
+.process-photo-item img,
+.process-photo-item video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.process-photo-remove {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(58, 44, 31, 0.72);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== Process photos (detail view: horizontal strip + lightbox) ===== */
+.process-photos-strip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.process-photos-strip::-webkit-scrollbar { display: none; }
+.process-photo-thumb {
+  flex: 0 0 auto;
+  width: 92px;
+  height: 92px;
+  object-fit: cover;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid var(--card-border);
+}
+
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 14, 8, 0.92);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 20px;
+}
+.photo-viewer img,
+.photo-viewer video {
+  max-width: 100%;
+  max-height: 74vh;
+  object-fit: contain;
+  border-radius: 10px;
+}
+.photo-viewer-close {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  background: rgba(255, 255, 255, 0.9);
+}
+.photo-viewer-nav {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  color: #fff;
+}
+.photo-viewer-nav .icon-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: transparent;
+  color: #fff;
+}
+.photo-viewer-counter { font-size: 14px; }
+
 .add-cat-row { display: flex; gap: 8px; margin-top: 8px; }
 .add-cat-row .input { flex: 1; }
 
