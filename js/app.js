@@ -14,7 +14,8 @@ const state = {
   setupCategoryDrafts: [],
   urlImportState: { url: "", loading: false, error: "" },
   keepScreenOnEnabled: true,
-  wakeLockStatus: "unknown"
+  wakeLockStatus: "unknown",
+  photoViewerIndex: null
 };
 
 // ---------------- Utilities ----------------
@@ -45,6 +46,46 @@ function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Downscales/compresses a photo before it goes into IndexedDB. Used for the
+// step-by-step process photos, since a recipe can now hold several of them
+// and full-resolution camera photos would otherwise bloat local storage fast.
+// Falls back to the original file if anything about the canvas conversion fails.
+function resizeImageFile(file, maxDim = 1280, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const original = reader.result;
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width >= height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } catch (e) {
+          resolve(original);
+        }
+      };
+      img.onerror = () => resolve(original);
+      img.src = original;
+    };
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -440,6 +481,7 @@ function buildRecipeCardHTML(recipe) {
 // ---------------- Recipe detail screen ----------------
 function openRecipeDetail(id) {
   state.currentRecipeId = id;
+  state.photoViewerIndex = null;
   state.screen = "recipeDetail";
   render();
 }
@@ -461,6 +503,8 @@ function renderRecipeDetailScreen() {
   const notes = recipe.notes
     ? `<div class="section"><h3>הערות</h3><p class="notes-text">${escapeHtml(recipe.notes)}</p></div>`
     : "";
+  const processPhotosHtml = buildProcessPhotosDetailHtml(recipe.processPhotos);
+  const viewerHtml = buildPhotoViewerHtml(recipe);
 
   return `
     <div class="screen detail-screen">
@@ -482,6 +526,7 @@ function renderRecipeDetailScreen() {
           <h3>אופן ההכנה</h3>
           ${instructionsHtml}
         </div>
+        ${processPhotosHtml}
         ${notes}
         ${source}
         <p class="meta-line">עודכן לאחרונה: ${formatDate(recipe.updatedAt)}</p>
@@ -490,7 +535,69 @@ function renderRecipeDetailScreen() {
         <button class="btn secondary" onclick="openEditRecipe('${recipe.id}')">✏️ עריכה</button>
         <button class="btn danger" onclick="confirmDeleteRecipe('${recipe.id}')">🗑️ מחיקה</button>
       </div>
+    </div>
+    ${viewerHtml}`;
+}
+
+// The "process photos" media list can hold either images or short videos (both
+// stored as data URLs). We don't tag items with a type field - we just sniff
+// the data URL's mime prefix - so this is the single place that decides which
+// tag (<img> vs <video>) a given item needs to render as.
+function isVideoDataUrl(src) {
+  return typeof src === "string" && src.startsWith("data:video");
+}
+
+function buildProcessPhotosDetailHtml(photos) {
+  if (!photos || !photos.length) return "";
+  const thumbs = photos
+    .map((src, i) =>
+      isVideoDataUrl(src)
+        ? `<video class="process-photo-thumb" src="${src}" muted playsinline onclick="openProcessPhotoViewer(${i})"></video>`
+        : `<img class="process-photo-thumb" src="${src}" alt="שלב ${i + 1} בהכנה" onclick="openProcessPhotoViewer(${i})" />`
+    )
+    .join("");
+  return `
+    <div class="section">
+      <h3>תמונות</h3>
+      <div class="process-photos-strip">${thumbs}</div>
     </div>`;
+}
+
+function buildPhotoViewerHtml(recipe) {
+  const photos = recipe.processPhotos || [];
+  if (state.photoViewerIndex === null || !photos[state.photoViewerIndex]) return "";
+  const src = photos[state.photoViewerIndex];
+  const mediaEl = isVideoDataUrl(src)
+    ? `<video src="${src}" controls playsinline onclick="event.stopPropagation()"></video>`
+    : `<img src="${src}" alt="" onclick="event.stopPropagation()" />`;
+  return `
+    <div class="photo-viewer" onclick="closeProcessPhotoViewer()">
+      <button class="icon-btn photo-viewer-close" onclick="event.stopPropagation(); closeProcessPhotoViewer()" aria-label="סגירה">✕</button>
+      ${mediaEl}
+      <div class="photo-viewer-nav" onclick="event.stopPropagation()">
+        <button class="icon-btn" onclick="stepProcessPhotoViewer(-1)" aria-label="הקודם">›</button>
+        <span class="photo-viewer-counter">${state.photoViewerIndex + 1} / ${photos.length}</span>
+        <button class="icon-btn" onclick="stepProcessPhotoViewer(1)" aria-label="הבא">‹</button>
+      </div>
+    </div>`;
+}
+
+function openProcessPhotoViewer(index) {
+  state.photoViewerIndex = index;
+  render();
+}
+
+function closeProcessPhotoViewer() {
+  state.photoViewerIndex = null;
+  render();
+}
+
+function stepProcessPhotoViewer(delta) {
+  const recipe = state.recipes.find((r) => r.id === state.currentRecipeId);
+  const photos = (recipe && recipe.processPhotos) || [];
+  if (!photos.length || state.photoViewerIndex === null) return;
+  state.photoViewerIndex = (state.photoViewerIndex + delta + photos.length) % photos.length;
+  render();
 }
 
 async function toggleFavorite(id) {
@@ -557,7 +664,8 @@ function blankRecipeDraft() {
     instructions: [],
     notes: "",
     sourceUrl: "",
-    imageDataUrl: null
+    imageDataUrl: null,
+    processPhotos: []
   };
 }
 
@@ -651,12 +759,35 @@ function skipToManualWithUrl() {
 }
 
 // ---------------- Recipe form (add / edit) ----------------
+
+// Any handler in the recipe form that re-renders (e.g. adding/removing a photo)
+// replaces the whole screen's HTML, which would otherwise wipe out whatever the
+// user already typed in the plain text/textarea fields (they only get read into
+// state.editingRecipe at save time). Call this first, before re-rendering, so a
+// photo action never loses in-progress text.
+function syncRecipeFormFieldsFromDom() {
+  if (!state.editingRecipe) return;
+  const titleEl = document.getElementById("f-title");
+  const catEl = document.getElementById("f-category");
+  const favEl = document.getElementById("f-favorite");
+  const ingEl = document.getElementById("f-ingredients");
+  const insEl = document.getElementById("f-instructions");
+  const notesEl = document.getElementById("f-notes");
+  if (titleEl) state.editingRecipe.title = titleEl.value;
+  if (catEl) state.editingRecipe.categoryId = catEl.value || null;
+  if (favEl) state.editingRecipe.favorite = favEl.checked;
+  if (ingEl) state.editingRecipe.ingredients = nl2list(ingEl.value);
+  if (insEl) state.editingRecipe.instructions = nl2list(insEl.value);
+  if (notesEl) state.editingRecipe.notes = notesEl.value;
+}
+
 function openEditRecipe(id) {
   const recipe = state.recipes.find((r) => r.id === id);
   if (!recipe) return;
   state.editingRecipe = Object.assign({}, recipe, {
     ingredients: (recipe.ingredients || []).slice(),
-    instructions: (recipe.instructions || []).slice()
+    instructions: (recipe.instructions || []).slice(),
+    processPhotos: (recipe.processPhotos || []).slice()
   });
   state.formMode = "edit";
   state.screen = "recipeForm";
@@ -712,6 +843,12 @@ function renderRecipeFormScreen() {
         <label class="field-label">אופן ההכנה (שלב אחד בכל שורה)</label>
         <textarea id="f-instructions" class="input textarea" rows="8" placeholder="לחמם תנור ל-180 מעלות&#10;לערבב את החומרים היבשים&#10;...">${escapeHtml((d.instructions || []).join("\n"))}</textarea>
 
+        <label class="field-label">הוספת תמונות (רשות)</label>
+        <p class="hint-text">אפשר להוסיף כמה תמונות או סרטונים שמראים את שלבי ההכנה, לפי סדר ההוספה.</p>
+        <input type="file" id="process-photo-input" accept="image/*,video/*" multiple style="display:none" onchange="onProcessPhotosSelected(event)" />
+        ${buildProcessPhotosFormHtml(d.processPhotos)}
+        <button class="btn secondary full" onclick="document.getElementById('process-photo-input').click()">📷 הוספת תמונות</button>
+
         <label class="field-label">הערות</label>
         <textarea id="f-notes" class="input textarea" rows="3">${escapeHtml(d.notes || "")}</textarea>
 
@@ -728,6 +865,7 @@ async function onPhotoSelected(event) {
   if (!file) return;
   try {
     const dataUrl = await readFileAsDataUrl(file);
+    syncRecipeFormFieldsFromDom();
     state.editingRecipe.imageDataUrl = dataUrl;
     render();
   } catch (e) {
@@ -736,7 +874,52 @@ async function onPhotoSelected(event) {
 }
 
 function removePhoto() {
+  syncRecipeFormFieldsFromDom();
   state.editingRecipe.imageDataUrl = null;
+  render();
+}
+
+function buildProcessPhotosFormHtml(photos) {
+  if (!photos || !photos.length) return "";
+  const items = photos
+    .map((src, i) => {
+      const mediaEl = isVideoDataUrl(src)
+        ? `<video src="${src}" muted playsinline></video>`
+        : `<img src="${src}" alt="" />`;
+      return `
+      <div class="process-photo-item">
+        ${mediaEl}
+        <button type="button" class="process-photo-remove" onclick="removeProcessPhoto(${i})" aria-label="הסרה">✕</button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="process-photos-grid">${items}</div>`;
+}
+
+async function onProcessPhotosSelected(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = ""; // allow selecting the same file again later if needed
+  if (!files.length) return;
+  syncRecipeFormFieldsFromDom();
+  if (!state.editingRecipe.processPhotos) state.editingRecipe.processPhotos = [];
+  for (const file of files) {
+    try {
+      // Videos aren't run through the canvas resize step (that's image-only) -
+      // they're stored as-is.
+      const isVideo = file.type && file.type.startsWith("video/");
+      const dataUrl = isVideo ? await readFileAsDataUrl(file) : await resizeImageFile(file);
+      state.editingRecipe.processPhotos.push(dataUrl);
+    } catch (e) {
+      console.warn("Failed to add process photo:", e);
+    }
+  }
+  render();
+}
+
+function removeProcessPhoto(index) {
+  if (!state.editingRecipe.processPhotos) return;
+  syncRecipeFormFieldsFromDom();
+  state.editingRecipe.processPhotos.splice(index, 1);
   render();
 }
 
@@ -745,7 +928,8 @@ function cancelForm() {
     state.editingRecipe &&
     (state.editingRecipe.title ||
       (state.editingRecipe.ingredients || []).length ||
-      (state.editingRecipe.instructions || []).length);
+      (state.editingRecipe.instructions || []).length ||
+      (state.editingRecipe.processPhotos || []).length);
   if (hasContent && !confirm("לבטל ולאבד את השינויים שלא נשמרו?")) return;
   if (state.formMode === "edit" && state.editingRecipe.id) {
     openRecipeDetail(state.editingRecipe.id);
