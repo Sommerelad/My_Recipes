@@ -476,6 +476,66 @@ body {
 .settings-screen h3 { color: var(--brown); }
 .about-section { color: var(--text-muted-2); font-size: 13.5px; }
 
+/* ===== Feedback (bugs / suggestions) ===== */
+.feedback-type-row {
+  display: flex;
+  gap: 16px;
+  margin: 10px 0;
+}
+.radio-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  color: var(--text);
+  cursor: pointer;
+}
+.radio-inline input { width: 17px; height: 17px; }
+.feedback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 14px 0;
+}
+.feedback-item {
+  background: var(--surface);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.feedback-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.feedback-type-badge {
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: #f3e6cf;
+  color: var(--brown);
+}
+.feedback-type-badge.bug { background: #fbeaea; color: var(--danger); }
+.feedback-type-badge.suggestion { background: #eaf3ea; color: var(--success); }
+.feedback-date {
+  font-size: 12px;
+  color: var(--text-muted-2);
+  flex: 1;
+}
+.feedback-delete {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+}
+.feedback-text {
+  font-size: 14.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
 /* ===== Toast ===== */
 .toast {
   position: fixed;
