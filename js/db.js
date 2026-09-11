@@ -4,7 +4,7 @@
 
 const DB = (() => {
   const DB_NAME = "recipesAppDB";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   let dbPromise = null;
 
   function openDB() {
@@ -26,6 +26,12 @@ const DB = (() => {
         }
         if (!db.objectStoreNames.contains("meta")) {
           db.createObjectStore("meta", { keyPath: "key" });
+        }
+        // Added in DB_VERSION 2: a local log of bug reports / feature suggestions,
+        // written from the "באגים והצעות" section in Settings.
+        if (!db.objectStoreNames.contains("feedback")) {
+          const fbStore = db.createObjectStore("feedback", { keyPath: "id" });
+          fbStore.createIndex("createdAt", "createdAt", { unique: false });
         }
       };
       req.onsuccess = (e) => resolve(e.target.result);
@@ -147,36 +153,116 @@ const DB = (() => {
     await reqToPromise(store.put({ key, value }));
   }
 
+  // ---------- Feedback (bug reports / suggestions) ----------
+  async function getAllFeedback() {
+    const store = await tx("feedback", "readonly");
+    const all = await reqToPromise(store.getAll());
+    return all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  async function addFeedback({ type, text }) {
+    const store = await tx("feedback", "readwrite");
+    const entry = { id: uuid(), type: type === "suggestion" ? "suggestion" : "bug", text: String(text || "").trim(), createdAt: Date.now() };
+    await reqToPromise(store.add(entry));
+    return entry;
+  }
+
+  async function deleteFeedback(id) {
+    const store = await tx("feedback", "readwrite");
+    await reqToPromise(store.delete(id));
+  }
+
   // ---------- Export / Import (backup) ----------
   async function exportAllData() {
-    const [categories, recipes] = await Promise.all([getAllCategories(), getAllRecipes()]);
+    const [categories, recipes, feedback] = await Promise.all([
+      getAllCategories(),
+      getAllRecipes(),
+      getAllFeedback()
+    ]);
     return {
       appName: "המתכונים שלי",
       exportVersion: 1,
       exportedAt: new Date().toISOString(),
       categories,
-      recipes
+      recipes,
+      feedback
     };
+  }
+
+  function normalizeCategoryName(name) {
+    return String(name || "").trim().toLowerCase();
   }
 
   async function importAllData(data, { mode = "merge" } = {}) {
     if (!data || !Array.isArray(data.categories) || !Array.isArray(data.recipes)) {
       throw new Error("קובץ הגיבוי אינו תקין");
     }
-    const catStore = await tx("categories", "readwrite");
-    const recStore = await tx("recipes", "readwrite");
 
     if (mode === "replace") {
+      const catStore = await tx("categories", "readwrite");
       await reqToPromise(catStore.clear());
+      for (const cat of data.categories) {
+        catStore.put(cat);
+      }
+      // Open each store's transaction fresh, right before using it - an IndexedDB
+      // transaction can auto-commit if it sits idle (no pending request) while
+      // other awaited work happens on a different transaction.
+      const recStore = await tx("recipes", "readwrite");
       await reqToPromise(recStore.clear());
+      for (const rec of data.recipes) {
+        recStore.put(rec);
+      }
+      const fbStore = await tx("feedback", "readwrite");
+      await reqToPromise(fbStore.clear());
+      for (const fb of data.feedback || []) {
+        fbStore.put(fb);
+      }
+      return { categories: data.categories.length, recipes: data.recipes.length };
     }
-    for (const cat of data.categories) {
-      catStore.put(cat);
+
+    // Merge mode: importing a backup should not create duplicate categories
+    // when a category with the same name already exists locally (which happens
+    // whenever the imported categories were created with different ids than the
+    // ones already on this device/browser - e.g. re-importing your own backup,
+    // or importing on a device where initial setup already created the same
+    // default topics). Match existing categories by (trimmed, case-insensitive)
+    // name, and remap any recipe.categoryId references accordingly.
+    const catStore = await tx("categories", "readwrite");
+    const existingCats = await reqToPromise(catStore.getAll());
+    const byName = new Map(existingCats.map((c) => [normalizeCategoryName(c.name), c]));
+    let nextOrder = existingCats.length;
+    const idRemap = new Map();
+    let addedCategories = 0;
+
+    for (const cat of data.categories || []) {
+      const key = normalizeCategoryName(cat.name);
+      const existing = byName.get(key);
+      if (existing) {
+        idRemap.set(cat.id, existing.id);
+      } else {
+        const newCat = { id: cat.id, name: String(cat.name || "").trim(), order: cat.order ?? nextOrder++ };
+        catStore.put(newCat);
+        byName.set(key, newCat);
+        idRemap.set(cat.id, cat.id);
+        addedCategories++;
+      }
     }
-    for (const rec of data.recipes) {
-      recStore.put(rec);
+
+    // Open the recipes transaction fresh, right before using it (see note above).
+    const recStore = await tx("recipes", "readwrite");
+    for (const rec of data.recipes || []) {
+      const categoryId = rec.categoryId ? (idRemap.get(rec.categoryId) ?? rec.categoryId) : rec.categoryId;
+      recStore.put(Object.assign({}, rec, { categoryId }));
     }
-    return { categories: data.categories.length, recipes: data.recipes.length };
+
+    // Feedback entries are just an append-only personal log - no name-based
+    // matching needed, put-by-id already avoids duplicates on a re-import.
+    const fbStore = await tx("feedback", "readwrite");
+    for (const fb of data.feedback || []) {
+      fbStore.put(fb);
+    }
+
+    return { categories: addedCategories, recipes: (data.recipes || []).length };
   }
 
   return {
@@ -193,6 +279,9 @@ const DB = (() => {
     toggleFavorite,
     getMeta,
     setMeta,
+    getAllFeedback,
+    addFeedback,
+    deleteFeedback,
     exportAllData,
     importAllData
   };
