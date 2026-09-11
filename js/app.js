@@ -15,7 +15,9 @@ const state = {
   urlImportState: { url: "", loading: false, error: "" },
   keepScreenOnEnabled: true,
   wakeLockStatus: "unknown",
-  photoViewerIndex: null
+  photoViewerIndex: null,
+  feedback: [],
+  feedbackDraft: { type: "bug", text: "" }
 };
 
 // ---------------- Utilities ----------------
@@ -277,6 +279,7 @@ async function init() {
 async function refreshData() {
   state.categories = await DB.getAllCategories();
   state.recipes = await DB.getAllRecipes();
+  state.feedback = await DB.getAllFeedback();
 }
 
 // ---------------- Render dispatcher ----------------
@@ -818,7 +821,7 @@ function renderRecipeFormScreen() {
         <span></span>
       </div>
       <div class="form-content">
-        <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none"
+        <input type="file" id="photo-input" accept="image/*" style="display:none"
           onchange="onPhotoSelected(event)" />
         ${photoBlock}
 
@@ -1020,6 +1023,28 @@ function renderSettingsScreen() {
           <button class="btn secondary full" onclick="document.getElementById('import-file-input').click()">⬆️ ייבוא גיבוי</button>
         </div>
 
+        <div class="section">
+          <h3>באגים והצעות</h3>
+          <p class="hint-text">מקום לרשום באגים שנתקלתם בהם או רעיונות לשיפור. הרשימה נשמרת מקומית בטאבלט, ואפשר לשלוח אותה במייל.</p>
+          <div class="feedback-type-row">
+            <label class="radio-inline">
+              <input type="radio" name="feedback-type" value="bug" ${state.feedbackDraft.type === "bug" ? "checked" : ""}
+                onchange="state.feedbackDraft.type = this.value" />
+              🐛 באג
+            </label>
+            <label class="radio-inline">
+              <input type="radio" name="feedback-type" value="suggestion" ${state.feedbackDraft.type === "suggestion" ? "checked" : ""}
+                onchange="state.feedbackDraft.type = this.value" />
+              💡 הצעה
+            </label>
+          </div>
+          <textarea id="feedback-text" class="input textarea" rows="3" placeholder="מה קרה? מה הייתם רוצים שיהיה?"
+            oninput="state.feedbackDraft.text = this.value">${escapeHtml(state.feedbackDraft.text)}</textarea>
+          <button class="btn secondary full" onclick="addFeedbackEntry()">➕ הוספה לרשימה</button>
+          ${buildFeedbackListHtml(state.feedback)}
+          ${state.feedback.length ? `<button class="btn primary full" onclick="emailFeedbackList()">📤 שליחת הרשימה במייל</button>` : ""}
+        </div>
+
         <div class="section about-section">
           <h3>אודות</h3>
           <p class="hint-text">המתכונים שלי - אפליקציה אישית לניהול מתכונים, פועלת כולה על המכשיר שלך.</p>
@@ -1027,6 +1052,59 @@ function renderSettingsScreen() {
       </div>
       ${renderBottomNav("settings")}
     </div>`;
+}
+
+function buildFeedbackListHtml(items) {
+  if (!items || !items.length) {
+    return `<p class="hint-text">עדיין לא נוספו דיווחים.</p>`;
+  }
+  const rows = items
+    .map(
+      (item) => `
+      <div class="feedback-item">
+        <div class="feedback-item-head">
+          <span class="feedback-type-badge ${item.type === "suggestion" ? "suggestion" : "bug"}">${
+        item.type === "suggestion" ? "💡 הצעה" : "🐛 באג"
+      }</span>
+          <span class="feedback-date">${formatDate(item.createdAt)}</span>
+          <button class="icon-btn danger feedback-delete" onclick="deleteFeedbackEntry('${item.id}')" aria-label="מחיקה">🗑️</button>
+        </div>
+        <p class="feedback-text">${escapeHtml(item.text)}</p>
+      </div>`
+    )
+    .join("");
+  return `<div class="feedback-list">${rows}</div>`;
+}
+
+async function addFeedbackEntry() {
+  const textEl = document.getElementById("feedback-text");
+  const text = ((textEl ? textEl.value : state.feedbackDraft.text) || "").trim();
+  if (!text) {
+    showToast("יש להזין תיאור לפני ההוספה", true);
+    return;
+  }
+  await DB.addFeedback({ type: state.feedbackDraft.type, text });
+  state.feedbackDraft = { type: "bug", text: "" };
+  state.feedback = await DB.getAllFeedback();
+  render();
+  showToast("נוסף לרשימה");
+}
+
+async function deleteFeedbackEntry(id) {
+  await DB.deleteFeedback(id);
+  state.feedback = await DB.getAllFeedback();
+  render();
+  showToast("הדיווח נמחק");
+}
+
+function emailFeedbackList() {
+  const typeLabel = (t) => (t === "suggestion" ? "הצעה" : "באג");
+  const body = state.feedback
+    .map((item) => `[${typeLabel(item.type)}] ${formatDate(item.createdAt)}\n${item.text}`)
+    .join("\n\n---\n\n");
+  const subject = "המתכונים שלי - באגים והצעות";
+  const mailto = `mailto:sommerelad@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailto;
 }
 
 function wakeLockStatusText() {
