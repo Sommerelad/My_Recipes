@@ -1,5 +1,5 @@
 // Service worker for "המתכונים שלי" - enables offline use once installed.
-const CACHE_NAME = "recipes-app-cache-v8";
+const CACHE_NAME = "recipes-app-cache-v9";
 const APP_SHELL = [
   "./",
   "./index.html",
