@@ -141,6 +141,20 @@ const DB = (() => {
     return recipe;
   }
 
+  // Appends one "stain" mark to a recipe (see the stains feature in app.js) - a
+  // recipe opened and left open for a while gets a small decorative mark, like a
+  // paper cookbook that shows wear on its most-used pages. Deliberately does NOT
+  // touch updatedAt - merely viewing a recipe shouldn't bump its "last edited" sort.
+  async function addStain(id, stain) {
+    const store = await tx("recipes", "readwrite");
+    const recipe = await reqToPromise(store.get(id));
+    if (!recipe) return null;
+    if (!Array.isArray(recipe.stains)) recipe.stains = [];
+    recipe.stains.push(stain);
+    await reqToPromise(store.put(recipe));
+    return recipe;
+  }
+
   // ---------- Meta / settings ----------
   async function getMeta(key) {
     const store = await tx("meta", "readonly");
@@ -277,6 +291,7 @@ const DB = (() => {
     saveRecipe,
     deleteRecipe,
     toggleFavorite,
+    addStain,
     getMeta,
     setMeta,
     getAllFeedback,
