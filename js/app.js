@@ -4,7 +4,7 @@
 const DEFAULT_CATEGORIES = ["עיקריות", "מרקים", "סלטים", "קינוחים", "מאפים ולחמים", "משקאות", "תוספות"];
 
 const state = {
-  screen: "loading", // setup | home | settings | recipeDetail | addChoice | urlImport | recipeForm
+  screen: "loading", // setup | home | settings | recipeDetail | addChoice | urlImport | recipeForm | tips
   categories: [],
   recipes: [],
   filter: { categoryId: null, favoritesOnly: false, query: "" },
@@ -18,7 +18,8 @@ const state = {
   photoViewerIndex: null,
   feedback: [],
   feedbackDraft: { type: "bug", text: "" },
-  viewMode: "grid" // grid | list
+  viewMode: "grid", // grid | list
+  detailMultiplier: 1 // ingredient quantity multiplier on the open recipe's detail screen
 };
 
 // ---------------- Utilities ----------------
@@ -172,7 +173,8 @@ function parseIngredientLines(lines) {
   return groups;
 }
 
-function buildIngredientsHtml(ingredients) {
+function buildIngredientsHtml(ingredients, multiplier) {
+  const m = multiplier || 1;
   const groups = parseIngredientLines(ingredients);
   if (!groups.length) return '<p class="hint-text">לא הוזנו מרכיבים</p>';
   return groups
@@ -181,16 +183,161 @@ function buildIngredientsHtml(ingredients) {
         ? `<div class="ingredient-group-title">${escapeHtml(g.heading)}</div>`
         : "";
       const items = g.items
-        .map(
-          (it) =>
-            `<li class="${it.optional ? "optional" : ""}">${escapeHtml(it.text)}${
-              it.optional ? '<span class="optional-badge">רשות</span>' : ""
-            }</li>`
-        )
+        .map((it) => {
+          const displayText = scaleQuantityInLine(it.text, m);
+          return `<li class="${it.optional ? "optional" : ""}">${escapeHtml(displayText)}${
+            it.optional ? '<span class="optional-badge">רשות</span>' : ""
+          }</li>`;
+        })
         .join("");
       return `${heading}<ul class="ingredients-list">${items}</ul>`;
     })
     .join("");
+}
+
+// ---------------- Ingredient quantity scaling (×½, ×2, ×3...) ----------------
+// Detects the quantity written at the very START of an ingredient line (an
+// integer, a decimal, a simple "a/b" fraction, a mixed "1 1/2", or a unicode
+// fraction glyph like "½", optionally attached right after an integer like
+// "1½", and an optional range like "2-3") and scales just that number,
+// leaving the rest of the line (the ingredient name, any note) untouched.
+// Lines with no leading number ("מלח לפי הטעם") are left as-is.
+const UNICODE_FRACTION_MAP = {
+  "¼": 1 / 4, "½": 1 / 2, "¾": 3 / 4, "⅓": 1 / 3, "⅔": 2 / 3,
+  "⅕": 1 / 5, "⅖": 2 / 5, "⅗": 3 / 5, "⅘": 4 / 5, "⅙": 1 / 6, "⅚": 5 / 6,
+  "⅛": 1 / 8, "⅜": 3 / 8, "⅝": 5 / 8, "⅞": 7 / 8
+};
+const FRACTION_DISPLAY = [
+  [1 / 8, "⅛"], [1 / 6, "⅙"], [1 / 5, "⅕"], [1 / 4, "¼"], [1 / 3, "⅓"], [3 / 8, "⅜"],
+  [2 / 5, "⅖"], [1 / 2, "½"], [3 / 5, "⅗"], [5 / 8, "⅝"], [2 / 3, "⅔"], [3 / 4, "¾"],
+  [4 / 5, "⅘"], [5 / 6, "⅚"], [7 / 8, "⅞"]
+];
+
+function parseLeadingQuantity(str) {
+  const n = str.length;
+  let i = 0;
+
+  function isDigit(ch) { return ch >= "0" && ch <= "9"; }
+
+  function readUnicodeFractionAt(pos) {
+    if (pos < n && Object.prototype.hasOwnProperty.call(UNICODE_FRACTION_MAP, str[pos])) {
+      return { value: UNICODE_FRACTION_MAP[str[pos]], length: pos + 1 };
+    }
+    return null;
+  }
+
+  const numStart = i;
+  while (i < n && isDigit(str[i])) i++;
+  const hasDigits = i > numStart;
+  let decimalEnd = i;
+  if (hasDigits && i < n && (str[i] === "." || str[i] === ",") && i + 1 < n && isDigit(str[i + 1])) {
+    i++;
+    while (i < n && isDigit(str[i])) i++;
+    decimalEnd = i;
+  }
+
+  if (!hasDigits) {
+    // No digits at all - maybe the line starts directly with a unicode fraction, e.g. "½ כוס".
+    const uf = readUnicodeFractionAt(0);
+    return uf ? { value: uf.value, length: uf.length } : null;
+  }
+
+  const firstNumStr = str.slice(numStart, decimalEnd);
+  const firstNum = parseFloat(firstNumStr.replace(",", "."));
+  const firstNumIsInteger = !/[.,]/.test(firstNumStr);
+  i = decimalEnd;
+
+  // Pure fraction "a/b" - the "/" follows the digits immediately, no space
+  // (e.g. "1/2 כוס קמח", "3/4 כפית"). Here firstNum IS the numerator, not a
+  // whole-number prefix, which is why this is checked before anything else.
+  if (firstNumIsInteger && i < n && str[i] === "/") {
+    const dStart = i + 1;
+    let m = dStart;
+    while (m < n && isDigit(str[m])) m++;
+    if (m > dStart) {
+      const den = parseInt(str.slice(dStart, m), 10);
+      if (den !== 0) return { value: firstNum / den, length: m };
+    }
+  }
+
+  // Unicode fraction glyph attached right after the integer, e.g. "1½".
+  const ufAttached = readUnicodeFractionAt(i);
+  if (ufAttached) {
+    return { value: firstNum + ufAttached.value, length: ufAttached.length };
+  }
+
+  // Mixed fraction: "1 1/2" - a space, then "a/b", only when the leading part
+  // had no decimal point (keeps "2.5" from being misread as "2" + ".5/...").
+  if (firstNumIsInteger) {
+    let j = i;
+    while (j < n && str[j] === " ") j++;
+    let k = j;
+    while (k < n && isDigit(str[k])) k++;
+    if (k > j && k < n && str[k] === "/") {
+      const dStart = k + 1;
+      let m = dStart;
+      while (m < n && isDigit(str[m])) m++;
+      if (m > dStart) {
+        const num = parseInt(str.slice(j, k), 10);
+        const den = parseInt(str.slice(dStart, m), 10);
+        if (den !== 0) {
+          return { value: firstNum + num / den, length: m };
+        }
+      }
+    }
+  }
+
+  return { value: firstNum, length: i };
+}
+
+function formatScaledNumber(value) {
+  if (!isFinite(value) || value <= 0) return null;
+  const rounded = Math.round(value * 1000) / 1000;
+  const whole = Math.floor(rounded + 1e-9);
+  const frac = rounded - whole;
+  if (frac < 0.02) {
+    return String(whole === 0 ? +rounded.toFixed(2) : whole);
+  }
+  let best = null;
+  let bestDiff = 0.02;
+  for (const [fv, glyph] of FRACTION_DISPLAY) {
+    const diff = Math.abs(frac - fv);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = glyph;
+    }
+  }
+  if (best) return whole > 0 ? `${whole}${best}` : best;
+  const decStr = rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  return decStr;
+}
+
+function scaleQuantityInLine(text, multiplier) {
+  if (!multiplier || multiplier === 1 || !isFinite(multiplier)) return text;
+  const first = parseLeadingQuantity(text);
+  if (!first) return text;
+  let endIdx = first.length;
+  let secondPiece = null;
+  let sep = null;
+  const afterFirst = text.slice(endIdx);
+  const rangeMatch = afterFirst.match(/^(\s*[-–—]\s*)/);
+  if (rangeMatch) {
+    const second = parseLeadingQuantity(afterFirst.slice(rangeMatch[0].length));
+    if (second) {
+      secondPiece = second;
+      sep = rangeMatch[0];
+      endIdx = endIdx + rangeMatch[0].length + second.length;
+    }
+  }
+  const scaledFirst = formatScaledNumber(first.value * multiplier);
+  if (scaledFirst === null) return text;
+  let prefix = scaledFirst;
+  if (secondPiece) {
+    const scaledSecond = formatScaledNumber(secondPiece.value * multiplier);
+    if (scaledSecond === null) return text;
+    prefix += sep + scaledSecond;
+  }
+  return prefix + text.slice(endIdx);
 }
 
 // ---------------- Instruction parsing (component groups) ----------------
@@ -323,6 +470,9 @@ function render() {
     case "recipeForm":
       r.innerHTML = renderRecipeFormScreen();
       break;
+    case "tips":
+      r.innerHTML = renderTipsScreen();
+      break;
     default:
       r.innerHTML = '<div class="loading">טוען...</div>';
   }
@@ -426,6 +576,9 @@ function renderBottomNav(active) {
     <div class="bottom-nav">
       <button class="nav-btn ${active === "home" ? "active" : ""}" onclick="goHome()">
         <span class="nav-icon">🏠</span><span>בית</span>
+      </button>
+      <button class="nav-btn ${active === "tips" ? "active" : ""}" onclick="openTips()">
+        <span class="nav-icon">💡</span><span>טיפים</span>
       </button>
       <button class="nav-btn ${active === "settings" ? "active" : ""}" onclick="openSettings()">
         <span class="nav-icon">⚙️</span><span>הגדרות</span>
@@ -535,9 +688,39 @@ function buildRecipeRowHTML(recipe) {
 function openRecipeDetail(id) {
   state.currentRecipeId = id;
   state.photoViewerIndex = null;
+  state.detailMultiplier = 1;
   state.screen = "recipeDetail";
   scheduleStainTimer(id);
   render();
+}
+
+function setDetailMultiplier(m) {
+  const val = Number(m);
+  if (!val || val <= 0 || !isFinite(val)) return;
+  state.detailMultiplier = val;
+  render();
+}
+
+function promptCustomMultiplier() {
+  const current = state.detailMultiplier || 1;
+  const input = prompt(
+    "להכפיל את הכמויות פי כמה? (למשל: 0.5 לחצי כמות, 1.5 לכמות וחצי, 4 להכפלה פי 4)",
+    String(current)
+  );
+  if (input === null) return;
+  const val = parseFloat(String(input).trim().replace(",", "."));
+  if (!val || val <= 0 || !isFinite(val)) {
+    showToast("כמות לא תקינה", true);
+    return;
+  }
+  state.detailMultiplier = val;
+  render();
+}
+
+function formatMultiplierLabel(m) {
+  if (m === 1) return "1";
+  const scaled = formatScaledNumber(m);
+  return scaled !== null ? `×${scaled}` : `×${m}`;
 }
 
 function renderRecipeDetailScreen() {
@@ -546,8 +729,25 @@ function renderRecipeDetailScreen() {
     return `<div class="screen"><p>המתכון לא נמצא.</p>
       <button class="btn secondary" onclick="goHome()">חזרה</button></div>`;
   }
-  const ingredientsHtml = buildIngredientsHtml(recipe.ingredients);
+  const multiplier = state.detailMultiplier || 1;
+  const ingredientsHtml = buildIngredientsHtml(recipe.ingredients, multiplier);
   const instructionsHtml = buildInstructionsHtml(recipe.instructions);
+  const multiplierPresets = [1 / 3, 1 / 2, 1, 2, 3];
+  const isCustomMultiplier = !multiplierPresets.some((p) => Math.abs(p - multiplier) < 0.001);
+  const multiplierRow = `
+    <div class="multiplier-row">
+      <span class="multiplier-label">כמות מתכון:</span>
+      ${multiplierPresets
+        .map(
+          (p) =>
+            `<button class="chip multiplier-btn ${Math.abs(p - multiplier) < 0.001 ? "active" : ""}"
+              onclick="setDetailMultiplier(${p})">${formatMultiplierLabel(p)}</button>`
+        )
+        .join("")}
+      <button class="chip multiplier-btn ${isCustomMultiplier ? "active" : ""}" onclick="promptCustomMultiplier()">
+        ✎ ${isCustomMultiplier ? formatMultiplierLabel(multiplier) : "אחר"}
+      </button>
+    </div>`;
   const photo = recipe.imageDataUrl
     ? `<img class="detail-photo" src="${recipe.imageDataUrl}" alt="תמונת המתכון" />`
     : "";
@@ -576,6 +776,7 @@ function renderRecipeDetailScreen() {
         <div class="badge">${escapeHtml(categoryName(recipe.categoryId))}</div>
         <div class="section">
           <h3>מרכיבים</h3>
+          ${multiplierRow}
           ${ingredientsHtml}
         </div>
         <div class="section">
@@ -821,7 +1022,8 @@ function roundRectPath(ctx, x, y, w, h, r) {
 }
 
 // Builds the recipe pages and returns an array of page <canvas> elements.
-async function buildRecipePdfCanvases(recipe) {
+async function buildRecipePdfCanvases(recipe, multiplier) {
+  const m = multiplier || 1;
   const contentW = PDF_PAGE_W - PDF_MARGIN * 2;
   const rightEdge = PDF_PAGE_W - PDF_MARGIN;
   const FONT = '"Segoe UI","Noto Sans Hebrew",Arial,sans-serif';
@@ -902,6 +1104,9 @@ async function buildRecipePdfCanvases(recipe) {
   });
 
   const metaBits = [categoryName(recipe.categoryId), recipe.favorite ? "⭐ מועדף" : ""].filter(Boolean);
+  if (Math.abs(m - 1) > 0.001) {
+    metaBits.push(`הכמויות הוכפלו פי ${formatMultiplierLabel(m).replace("×", "")}`);
+  }
   if (metaBits.length) {
     y += 2;
     drawParagraph(metaBits.join("   •   "), { size: 15, color: "#8a7a5f", lineHeight: 22 });
@@ -944,7 +1149,8 @@ async function buildRecipePdfCanvases(recipe) {
         drawParagraph(g.heading, { size: 18, weight: "700", color: "#a8582f", lineHeight: 26 });
       }
       g.items.forEach((it) => {
-        const label = it.optional ? `${it.text}  (רשות)` : it.text;
+        const scaledText = scaleQuantityInLine(it.text, m);
+        const label = it.optional ? `${scaledText}  (רשות)` : scaledText;
         drawMarkedLine("•", label, { color: it.optional ? "#8a7a5f" : "#3a2c1f" });
       });
       y += 10;
@@ -1090,8 +1296,8 @@ function buildPdfFromJpegPages(pages) {
   return out;
 }
 
-async function buildRecipePdfBytes(recipe) {
-  const canvases = await buildRecipePdfCanvases(recipe);
+async function buildRecipePdfBytes(recipe, multiplier) {
+  const canvases = await buildRecipePdfCanvases(recipe, multiplier);
   const pages = [];
   for (const c of canvases) {
     const jpeg = await canvasToJpegBytes(c, 0.88);
@@ -1114,9 +1320,15 @@ function downloadBinaryBlob(blob, filename) {
 async function shareRecipeAsPdf(id) {
   const recipe = state.recipes.find((r) => r.id === id);
   if (!recipe) return;
+  // If this recipe is the one currently open on the detail screen, share it at
+  // whatever quantity multiplier is currently showing on screen (e.g. the user
+  // doubled it for a dinner party and wants to send that version) - otherwise
+  // share the recipe's original quantities.
+  const multiplier =
+    state.screen === "recipeDetail" && state.currentRecipeId === id ? state.detailMultiplier || 1 : 1;
   showToast("מכין PDF לשיתוף...");
   try {
-    const pdfBytes = await buildRecipePdfBytes(recipe);
+    const pdfBytes = await buildRecipePdfBytes(recipe, multiplier);
     const safeTitle = (recipe.title || "מתכון").replace(/[\\/:*?"<>|]/g, " ").trim() || "מתכון";
     const blob = new Blob([pdfBytes], { type: "application/pdf" });
     const file = new File([blob], `${safeTitle}.pdf`, { type: "application/pdf" });
@@ -1328,7 +1540,7 @@ function renderRecipeFormScreen() {
          <button class="btn secondary" onclick="document.getElementById('photo-input').click()">החלפת תמונה</button>
          <button class="btn secondary" onclick="removePhoto()">הסרת תמונה</button>
        </div>`
-    : `<button class="btn secondary full" onclick="document.getElementById('photo-input').click()">📷 הוספת תמונה של המתכון המקורי</button>`;
+    : `<button class="btn secondary full" onclick="document.getElementById('photo-input').click()">📷 הוספת תמונה של המתכון המוכן</button>`;
 
   return `
     <div class="screen">
@@ -1483,6 +1695,164 @@ async function saveRecipeForm() {
   await refreshData();
   showToast("המתכון נשמר");
   openRecipeDetail(saved.id);
+}
+
+// ---------------- Tips & conversions screen ----------------
+// A static, offline reference: kosher-friendly ingredient substitutions, and
+// standard kitchen weight/volume conversion tables. All substitute ingredients
+// listed here are kosher-friendly (no pork, no shellfish/non-kosher fish) -
+// the point of this screen is quick swaps mid-cooking, not "koshering" a
+// recipe, so nothing treif is ever suggested as the replacement.
+function openTips() {
+  state.screen = "tips";
+  render();
+}
+
+const INGREDIENT_SUBSTITUTIONS = [
+  {
+    item: "חמאה (באפייה)",
+    sub: "שמן צמחי/קנולה - ¾ מהכמות (1 כוס חמאה ≈ ¾ כוס שמן)",
+    note: "התוצאה תהיה קצת פחות תופחת ורכה, אבל עובד טוב ברוב העוגות והעוגיות"
+  },
+  {
+    item: "חמאה (במתכון בשרי)",
+    sub: "מרגרינה פרווה, או שמן זית/קנולה",
+    note: "כדי לא לערבב בשרי עם חלבי"
+  },
+  {
+    item: "שמנת מתוקה / שמנת לקצפת",
+    sub: "חלב + חמאה מומסת (לחלבי), או שמנת קוקוס מוקצפת (לפרווה)",
+    note: ""
+  },
+  {
+    item: "ביצה אחת (באפייה)",
+    sub: "¼ כוס מחית תפוחים, או כף זרעי פשתן טחונים + 3 כפות מים",
+    note: "מתאים בעיקר לעוגות ומאפים, פחות לרקיקים/עוגיות שצריכות מרקם פריך"
+  },
+  {
+    item: "אבקת אפייה (1 כפית)",
+    sub: "¼ כפית סודה לשתייה + ½ כפית מיץ לימון או חומץ",
+    note: ""
+  },
+  {
+    item: "יין לבישול",
+    sub: "יין, או מיץ ענבים + קורט חומץ",
+    note: ""
+  },
+  {
+    item: "רוטב וורסטרשייר",
+    sub: "רוטב סויה + חומץ + קורט סוכר וקורט פלפל שחור",
+    note: "המקור מכיל לרוב אנשובי"
+  },
+  {
+    item: "רוטב דגים / ציר דגים (מטבח אסייתי)",
+    sub: "רוטב סויה + חומץ בלסמי, או ציר פטריות מרוכז",
+    note: ""
+  },
+  {
+    item: "גבינות קשות מיובאות (כגון פרמזן)",
+    sub: "גבינה קשה מקומית, או גבינה טבעונית",
+    note: "חלק מהגבינות הקשות מיוצרות בעזרת אנזים מן החי (רנט) - כדאי לבדוק את רשימת הרכיבים על גבי האריזה"
+  },
+  {
+    item: "חלב (למתכון בשרי)",
+    sub: "חלב סויה/שיבולת שועל/שקדים",
+    note: ""
+  }
+];
+
+// From America's Test Kitchen's standard conversion chart - exact US/metric values.
+const OZ_TO_GRAM = [
+  ["½ oz", "14 גרם"],
+  ["1 oz", "28 גרם"],
+  ["2 oz", "57 גרם"],
+  ["3 oz", "85 גרם"],
+  ["4 oz", "113 גרם"],
+  ["5 oz", "142 גרם"],
+  ["6 oz", "170 גרם"],
+  ["8 oz", "227 גרם"],
+  ["10 oz", "283 גרם"],
+  ["12 oz", "340 גרם"],
+  ["16 oz (1 lb)", "454 גרם"]
+];
+
+// Approximate - actual weight varies a bit by how an ingredient is packed/sifted,
+// but these are the standard baking reference values.
+const CUP_TO_GRAM = [
+  ["קמח לבן", "כ-120 גרם"],
+  ["סוכר לבן", "כ-200 גרם"],
+  ["סוכר חום (דחוס)", "כ-210 גרם"],
+  ["חמאה", "כ-227 גרם (1 כף חמאה ≈ 14 גרם)"],
+  ["שמן", "כ-218 גרם"],
+  ["אורז (לא מבושל)", "כ-190 גרם"],
+  ["קקאו/אבקת שוקולד", "כ-90 גרם"],
+  ["שיבולת שועל", "כ-90 גרם"]
+];
+
+const VOLUME_TABLE = [
+  ["1 כפית (tsp)", "5 מ\"ל"],
+  ["1 כף (tbsp) = 3 כפיות", "15 מ\"ל"],
+  ["¼ כוס", "59 מ\"ל"],
+  ["⅓ כוס", "79 מ\"ל"],
+  ["½ כוס", "118 מ\"ל"],
+  ["¾ כוס", "177 מ\"ל"],
+  ["1 כוס", "237 מ\"ל (≈240 מ\"ל)"],
+  ["1½ כוס", "355 מ\"ל"],
+  ["2 כוסות", "473 מ\"ל"],
+  ["4 כוסות (1 קורט)", "0.946 ליטר"],
+  ["1 ליטר", "≈1.06 קוורט"]
+];
+
+function buildSubstitutionsHtml() {
+  return INGREDIENT_SUBSTITUTIONS
+    .map(
+      (s) => `
+      <div class="tip-row">
+        <div class="tip-row-item">${escapeHtml(s.item)}</div>
+        <div class="tip-row-sub">↔ ${escapeHtml(s.sub)}</div>
+        ${s.note ? `<div class="tip-row-note">${escapeHtml(s.note)}</div>` : ""}
+      </div>`
+    )
+    .join("");
+}
+
+function buildTipsTable(rows, headers) {
+  const head = `<tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr>`;
+  const body = rows
+    .map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table class="tips-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function renderTipsScreen() {
+  return `
+    <div class="screen tips-screen">
+      <div class="topbar">
+        <h1 class="app-title">טיפים ויחידות מידה</h1>
+      </div>
+      <div class="form-content">
+        <details class="tips-section" open>
+          <summary>⚖️ יחידות משקל - תקן מול ארה"ב</summary>
+          <p class="hint-text">מתכונים אמריקאיים נוטים למדוד במשקל באונקיות/פאונד, בעוד שבארץ נהוג גרם וק"ג.</p>
+          ${buildTipsTable(OZ_TO_GRAM, ["אונקיות (oz)", "גרם"])}
+          <p class="hint-text" style="margin-top:12px">1 פאונד (lb) = 454 גרם = 0.454 ק"ג</p>
+          <div class="tip-subtitle">כמה שוקל כוס אחת של מרכיבים נפוצים (משוער)</div>
+          ${buildTipsTable(CUP_TO_GRAM, ["מרכיב", "משקל ב-1 כוס"])}
+        </details>
+
+        <details class="tips-section">
+          <summary>🥤 יחידות נפח</summary>
+          <p class="hint-text">כפית/כף/כוס אמריקאיות מול מ"ל וליטר.</p>
+          ${buildTipsTable(VOLUME_TABLE, ["מידה", "מ\"ל / ליטר"])}
+        </details>
+
+        <details class="tips-section">
+          <summary>🔄 תחליפים למרכיבים</summary>
+          ${buildSubstitutionsHtml()}
+        </details>
+      </div>
+      ${renderBottomNav("tips")}
+    </div>`;
 }
 
 // ---------------- Settings screen ----------------
